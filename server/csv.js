@@ -57,7 +57,7 @@ const MAX_ROWS = 1000;
  * Check every row of a CSV the way the link wizard would, without writing anything.
  * Each row is "valid", "duplicate" (skipped) or "error". Returns the rows plus a summary.
  */
-function checkCsv(db, user, text, { selfHost } = {}) {
+async function checkCsv(db, user, text, { selfHost } = {}) {
   const rows = parseCsv(text);
   if (rows.length < 2) return { fatal: 'The file needs a header row and at least one link.' };
   const cols = mapHeaders(rows[0]);
@@ -70,7 +70,8 @@ function checkCsv(db, user, text, { selfHost } = {}) {
   const seenAlias = new Set();
   const seenDest = new Set();
   const out = [];
-  body.forEach((cells, i) => {
+  for (let i = 0; i < body.length; i++) {
+    const cells = body[i];
     const get = (f) => (cols[f] === undefined ? '' : String(cells[cols[f]] ?? '').trim());
     const input = {
       destination_url: get('destination_url'),
@@ -83,7 +84,7 @@ function checkCsv(db, user, text, { selfHost } = {}) {
       title: get('title'),
     };
     const item = { row: i + 2, input, status: 'valid', messages: [] };
-    const v = validateLink(db, input, { ownerId: user.id, selfHost });
+    const v = await validateLink(db, input, { ownerId: user.id, selfHost });
 
     if (!v.ok) {
       item.status = 'error';
@@ -109,7 +110,7 @@ function checkCsv(db, user, text, { selfHost } = {}) {
       }
     }
     out.push(item);
-  });
+  }
 
   const summary = {
     total: out.length,

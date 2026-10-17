@@ -28,10 +28,10 @@ function page(res, status, title, message, extraHtml = '') {
   res.end(html);
 }
 
-function lookup(db, code) {
+async function lookup(db, code) {
   let row = cache.get(code);
   if (row === undefined) {
-    row = db.prepare('SELECT id, short_code, destination_url, status, expires_at, click_limit, password_hash FROM links WHERE short_code = ?').get(code) || null;
+    row = (await db.get('SELECT id, short_code, destination_url, status, expires_at, click_limit, password_hash FROM links WHERE short_code = ?', [code])) || null;
     if (row) cache.set(code, row);
   }
   return row;
@@ -45,7 +45,7 @@ function lookup(db, code) {
 async function handleRedirect(db, req, res, code, { unlocked = false } = {}) {
   const t0 = performance.now();
   if (!CODE_RE.test(code)) return page(res, 404, 'Link not found', 'This short link does not exist.');
-  const link = lookup(db, code);
+  const link = await lookup(db, code);
   if (!link) return page(res, 404, 'Link not found', 'This short link does not exist. Check the address and try again.');
   if (link.status === 'disabled') {
     return page(res, 410, 'Link disabled', 'This link has been switched off and no longer redirects.');
@@ -66,16 +66,18 @@ async function handleRedirect(db, req, res, code, { unlocked = false } = {}) {
 
   // Click limit: one atomic UPDATE, so two visitors can never both take the last click.
   // Bots never use up a click, but a link that has hit its limit refuses everyone.
+  // Links without a limit are counted when the click is saved (a moment after the redirect), so no database wait.
+  let countIt = false;
   if (link.click_limit !== null) {
     if (parsed.isBot) {
-      const cur = db.prepare('SELECT click_count FROM links WHERE id = ?').get(link.id);
+      const cur = await db.get('SELECT click_count FROM links WHERE id = ?', [link.id]);
       if (cur.click_count >= link.click_limit) return page(res, 410, 'Click limit reached', 'This link has reached its click limit and no longer redirects.');
     } else {
-      const r = db.prepare('UPDATE links SET click_count = click_count + 1 WHERE id = ? AND click_count < ?').run(link.id, link.click_limit);
+      const r = await db.run('UPDATE links SET click_count = click_count + 1 WHERE id = ? AND click_count < ?', [link.id, link.click_limit]);
       if (r.changes === 0) return page(res, 410, 'Click limit reached', 'This link has reached its click limit and no longer redirects.');
     }
   } else if (!parsed.isBot) {
-    db.prepare('UPDATE links SET click_count = click_count + 1 WHERE id = ?').run(link.id);
+    countIt = true;
   }
 
   const decideMs = performance.now() - t0;
@@ -107,6 +109,7 @@ async function handleRedirect(db, req, res, code, { unlocked = false } = {}) {
         source: url.searchParams.get('src') === 'qr' ? 'qr' : 'direct',
         visitor_hash: clicks.visitorHash(clientIp(req), ua),
         is_bot: parsed.isBot,
+        count_it: countIt,
       });
     } catch (e) { console.error('click log failed', e.message); }
   });
@@ -119,7 +122,7 @@ async function handleUnlock(db, req, res, code) {
     if (e instanceof HttpError) return page(res, 429, 'Too many attempts', 'Please wait a minute and try again.');
     throw e;
   }
-  const link = CODE_RE.test(code) ? lookup(db, code) : null;
+  const link = CODE_RE.test(code) ? await lookup(db, code) : null;
   if (!link || !link.password_hash) return handleRedirect(db, req, res, code);
   const body = new URLSearchParams(await readBody(req, 8 * 1024));
   if (!verifyPassword(body.get('password') || '', link.password_hash)) {

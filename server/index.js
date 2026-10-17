@@ -61,7 +61,9 @@ function createServer(db) {
       return await handleRedirect(db, req, res, '!');   // renders the "link not found" page
     } catch (e) {
       if (res.headersSent) { res.end(); return; }
-      if (e instanceof HttpError) {
+      if (e && typeof e.code === 'string' && e.code.startsWith('22') && e.severity) {
+        sendJson(res, 400, { error: 'Some of the values sent were not valid' });   // Postgres "data exception" (bad number, bad text...)
+      } else if (e instanceof HttpError) {
         const headers = e.status === 429 && e.extra.retryAfter ? { 'Retry-After': String(e.extra.retryAfter) } : {};
         sendJson(res, e.status, { error: e.message, ...e.extra }, headers);
       } else {
@@ -72,25 +74,37 @@ function createServer(db) {
   });
 }
 
-function ensureAdmin(db) {
-  if (db.prepare("SELECT 1 FROM users WHERE role = 'admin'").get()) return;
-  db.prepare('INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(config.ADMIN_EMAIL, 'Admin', auth.hashPassword(config.ADMIN_PASSWORD), 'admin', nowIso());
-  console.log(`Created admin account ${config.ADMIN_EMAIL}. Change ADMIN_PASSWORD before you deploy.`);
+async function ensureAdmin(db) {
+  if (await db.get("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1")) return;
+  const r = await db.run('INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id',
+    [config.ADMIN_EMAIL, 'Admin', auth.hashPassword(config.ADMIN_PASSWORD), 'admin', nowIso()]);
+  if (r.id) console.log(`Created admin account ${config.ADMIN_EMAIL}. Change ADMIN_PASSWORD before you deploy.`);
 }
 
-if (require.main === module) {
-  const db = openDb(config.DB_PATH);
-  ensureAdmin(db);
-  if (config.SEED_DEMO && !db.prepare('SELECT 1 FROM links LIMIT 1').get()) {
-    require('./seed').seed(db);
+async function main() {
+  const db = await openDb(config.DATABASE_URL);
+  await ensureAdmin(db);
+  if (config.SEED_DEMO && !(await db.get('SELECT 1 FROM links LIMIT 1'))) {
+    await require('./seed').seed(db);
     console.log('Seeded demo data.');
   }
   const server = createServer(db);
-  server.listen(config.PORT, () => console.log(`LinkPulse running on http://localhost:${config.PORT}`));
-  const shutdown = () => { clicks.flush(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 2000).unref(); };
+  server.listen(config.PORT, () => console.log(`LinkPulse running on http://localhost:${config.PORT} (database: Neon/PostgreSQL)`));
+  let closing = false;
+  const shutdown = async () => {
+    if (closing) return;
+    closing = true;
+    setTimeout(() => process.exit(0), 5000).unref();
+    server.close();
+    try { await clicks.flush(); await db.close(); } catch { /* exiting anyway */ }
+    process.exit(0);
+  };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+}
+
+if (require.main === module) {
+  main().catch((e) => { console.error('Could not start LinkPulse:', e.message); process.exit(1); });
 }
 
 module.exports = { createServer, ensureAdmin };

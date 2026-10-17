@@ -46,22 +46,22 @@ function verifyToken(token) {
 }
 
 /** Returns the user row for the request's bearer token, or null. Reads role from the DB, not the token. */
-function currentUser(db, req) {
+async function currentUser(db, req) {
   const header = req.headers.authorization || '';
   if (!header.startsWith('Bearer ')) return null;
   const payload = verifyToken(header.slice(7));
   if (!payload) return null;
-  return db.prepare('SELECT id, email, name, role FROM users WHERE id = ?').get(payload.sub) || null;
+  return (await db.get('SELECT id, email, name, role FROM users WHERE id = ?', [payload.sub])) || null;
 }
 
-function requireUser(db, req) {
-  const user = currentUser(db, req);
+async function requireUser(db, req) {
+  const user = await currentUser(db, req);
   if (!user) throw new HttpError(401, 'Please log in');
   return user;
 }
 
-function requireAdmin(db, req) {
-  const user = requireUser(db, req);
+async function requireAdmin(db, req) {
+  const user = await requireUser(db, req);
   if (user.role !== 'admin') throw new HttpError(403, 'Admin access required');
   return user;
 }

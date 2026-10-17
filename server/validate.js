@@ -21,8 +21,8 @@ function parseDestination(raw) {
 }
 
 /** True if host equals a blocked domain or is a subdomain of one. */
-function isBlockedHost(db, host) {
-  const rows = db.prepare('SELECT domain FROM blocked_domains').all();
+async function isBlockedHost(db, host) {
+  const rows = await db.all('SELECT domain FROM blocked_domains');
   return rows.find((r) => {
     const d = r.domain.toLowerCase();
     return host === d || host.endsWith(`.${d}`);
@@ -50,7 +50,7 @@ function parseLimit(raw) {
  * Check a link before it is saved. Returns { errors: {field: msg}, warnings: [msg], clean }.
  * `existingId` lets an edit keep its own alias.
  */
-function validateLink(db, input, { ownerId, existingId = null, selfHost = null, isEdit = false } = {}) {
+async function validateLink(db, input, { ownerId, existingId = null, selfHost = null, isEdit = false } = {}) {
   const errors = {};
   const warnings = [];
   const clean = {};
@@ -61,12 +61,12 @@ function validateLink(db, input, { ownerId, existingId = null, selfHost = null, 
     else {
       clean.destination_url = parsed.url.toString();
       if (selfHost && parsed.host === selfHost.toLowerCase()) errors.destination_url = 'A link cannot point back to LinkPulse itself';
-      const blocked = isBlockedHost(db, parsed.host);
+      const blocked = await isBlockedHost(db, parsed.host);
       if (blocked) errors.destination_url = `The domain ${blocked} is on the blocklist`;
       if (parsed.url.protocol === 'http:') warnings.push('This destination uses http, not https. Visitors may see a browser warning.');
       if (!errors.destination_url && ownerId) {
-        const dup = db.prepare('SELECT short_code FROM links WHERE owner_id = ? AND destination_url = ? AND id IS NOT ?')
-          .get(ownerId, clean.destination_url, existingId);
+        const dup = await db.get('SELECT short_code FROM links WHERE owner_id = ? AND destination_url = ? AND id IS DISTINCT FROM ? LIMIT 1',
+          [ownerId, clean.destination_url, existingId]);
         if (dup) warnings.push(`You already have a short link for this destination (${dup.short_code}).`);
       }
     }
@@ -78,7 +78,7 @@ function validateLink(db, input, { ownerId, existingId = null, selfHost = null, 
       if (!ALIAS_RE.test(alias)) errors.alias = 'Alias must be 3 to 32 characters: letters, numbers, - or _';
       else if (RESERVED_ALIASES.has(alias.toLowerCase())) errors.alias = 'This alias is reserved. Choose another.';
       else {
-        const taken = db.prepare('SELECT id FROM links WHERE short_code = ? COLLATE NOCASE AND id IS NOT ?').get(alias, existingId);
+        const taken = await db.get('SELECT id FROM links WHERE short_code = ? AND id IS DISTINCT FROM ?', [alias, existingId]);
         if (taken) errors.alias = 'This alias is already taken';
         else clean.alias = alias;
       }

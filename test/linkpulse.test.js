@@ -4,7 +4,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linkpulse-test-'));
 process.env.DATA_DIR = tmp;
-process.env.DB_PATH = path.join(tmp, 'test.db');
+// The tests need a PostgreSQL database (a Neon branch or any local Postgres): TEST_DATABASE_URL or DATABASE_URL.
+// They run inside their own schema, which is dropped at the end, so no real data is touched.
+const DB_URL = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
+if (!DB_URL) { console.error('Set TEST_DATABASE_URL (or DATABASE_URL) to a PostgreSQL connection string to run the tests.'); process.exit(1); }
+const SCHEMA = `lp_test_${Date.now().toString(36)}_${process.pid}`;
 process.env.CREATE_LIMIT_PER_MIN = '20';
 
 const { test, before, after, beforeEach } = require('node:test');
@@ -33,7 +37,7 @@ async function api(method, url, { token, body, raw } = {}) {
   return { status: res.status, json, text, headers: res.headers };
 }
 const visit = (code, ua = BROWSER, extra = {}) => fetch(`${base}/${code}`, { redirect: 'manual', headers: { 'User-Agent': ua, ...extra } });
-const clickRows = (linkId) => db.prepare('SELECT * FROM clicks WHERE link_id = ?').all(linkId);
+const clickRows = (linkId) => db.all('SELECT * FROM clicks WHERE link_id = ?', [linkId]);
 
 async function register(email) {
   const r = await api('POST', '/api/auth/register', { body: { email, name: email.split('@')[0], password: 'password123' } });
@@ -47,8 +51,8 @@ async function makeLink(token, body) {
 }
 
 before(async () => {
-  db = openDb(config.DB_PATH);
-  ensureAdmin(db);
+  db = await openDb(DB_URL, { schema: SCHEMA });
+  await ensureAdmin(db);
   server = createServer(db);
   await new Promise((r) => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -58,7 +62,13 @@ before(async () => {
   adminToken = login.json.token;
 });
 beforeEach(() => ratelimit.resetAll());
-after(() => { clicks.flush(); server.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
+after(async () => {
+  await clicks.flush();
+  server.close();
+  await db.exec(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
+  await db.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
 
 // ---------------------------------------------------------------- the four proofs from the deck
 test('PROOF 1: a link capped at 3 clicks lets exactly 3 through, even when 12 visitors arrive at once', async () => {
@@ -67,9 +77,9 @@ test('PROOF 1: a link capped at 3 clicks lets exactly 3 through, even when 12 vi
   const codes = results.map((r) => r.status).sort();
   assert.equal(codes.filter((c) => c === 302).length, 3, `statuses: ${codes}`);
   assert.equal(codes.filter((c) => c === 410).length, 9);
-  clicks.flush();
-  assert.equal(db.prepare('SELECT click_count FROM links WHERE id = ?').get(link.id).click_count, 3);
-  assert.equal(clickRows(link.id).filter((c) => !c.is_bot).length, 3);
+  await clicks.flush();
+  assert.equal((await db.get('SELECT click_count FROM links WHERE id = ?', [link.id])).click_count, 3);
+  assert.equal((await clickRows(link.id)).filter((c) => !c.is_bot).length, 3);
   const after4 = await visit(link.short_code);
   assert.equal(after4.status, 410);
 });
@@ -82,8 +92,8 @@ test('PROOF 2: bots are logged but never counted, and never use up a click', asy
   }
   assert.equal((await visit(link.short_code, PHONE)).status, 302);       // first human takes the one allowed click
   assert.equal((await visit(link.short_code, PHONE)).status, 410);       // limit reached
-  clicks.flush();
-  const rows = clickRows(link.id);
+  await clicks.flush();
+  const rows = await clickRows(link.id);
   assert.equal(rows.filter((r) => r.is_bot).length, 5);
   assert.equal(rows.filter((r) => !r.is_bot).length, 1);
   const a = await api('GET', `/api/links/${link.id}/analytics`, { token: userToken });
@@ -95,7 +105,7 @@ test('PROOF 3: an admin takedown stops redirects at once and keeps the history',
   const link = await makeLink(userToken, { destination_url: 'https://example.com/takedown' });
   assert.equal((await visit(link.short_code)).status, 302);              // warms the cache
   assert.equal((await visit(link.short_code, PHONE)).status, 302);
-  clicks.flush();
+  await clicks.flush();
   const off = await api('POST', `/api/admin/links/${link.id}/disable`, { token: adminToken, body: { reason: 'Reported as abusive' } });
   assert.equal(off.status, 200);
   const blocked = await visit(link.short_code);
@@ -111,15 +121,15 @@ test('PROOF 3: an admin takedown stops redirects at once and keeps the history',
 
 test('PROOF 4: the redirect is sent before the click is written', async () => {
   const link = await makeLink(userToken, { destination_url: 'https://example.com/fast' });
-  clicks.flush();
-  const before = clickRows(link.id).length;
+  await clicks.flush();
+  const before = (await clickRows(link.id)).length;
   const res = await visit(link.short_code);
   assert.equal(res.status, 302);
   assert.match(res.headers.get('server-timing') || '', /decide;dur=/);
-  assert.equal(clickRows(link.id).length, before, 'click must not be in the database yet');
+  assert.equal((await clickRows(link.id)).length, before, 'click must not be in the database yet');
   assert.ok(clicks.pending() >= 1, 'click should be waiting in the queue');
-  assert.equal(clicks.flush() >= 1, true);
-  assert.equal(clickRows(link.id).length, before + 1);
+  await clicks.flush();
+  assert.equal((await clickRows(link.id)).length, before + 1);
 });
 
 // ---------------------------------------------------------------- creation and validation
@@ -178,8 +188,8 @@ test('auto-generated codes are unique, 7 characters, base62', async () => {
 test('expired links stop redirecting but keep their analytics', async () => {
   const link = await makeLink(userToken, { destination_url: 'https://example.com/exp', expires_at: new Date(Date.now() + 3600_000 * 5).toISOString() });
   assert.equal((await visit(link.short_code)).status, 302);
-  clicks.flush();
-  db.prepare('UPDATE links SET expires_at = ? WHERE id = ?').run(new Date(Date.now() - 1000).toISOString(), link.id);
+  await clicks.flush();
+  await db.run('UPDATE links SET expires_at = ? WHERE id = ?', [new Date(Date.now() - 1000).toISOString(), link.id]);
   cache.clear();
   const r = await visit(link.short_code);
   assert.equal(r.status, 410);
@@ -200,8 +210,8 @@ test('password-protected links ask first, reject wrong passwords, then redirect'
   const ok = await post('open-sesame');
   assert.equal(ok.status, 303);
   assert.equal(ok.headers.get('location'), 'https://example.com/secret');
-  clicks.flush();
-  assert.equal(db.prepare('SELECT click_count FROM links WHERE id = ?').get(link.id).click_count, 1);   // the form view and wrong guess did not count
+  await clicks.flush();
+  assert.equal((await db.get('SELECT click_count FROM links WHERE id = ?', [link.id])).click_count, 1);   // the form view and wrong guess did not count
   for (let i = 0; i < 10; i++) await post('guess');
   assert.equal((await post('open-sesame')).status, 429);                                              // guessing is rate limited
 });
@@ -218,8 +228,8 @@ test('click details, QR marker, unique visitors and referrers are recorded', asy
   await fetch(`${base}/${link.short_code}`, { redirect: 'manual', headers: { 'User-Agent': PHONE, Referer: 'https://www.instagram.com/some/post' } });
   await fetch(`${base}/${link.short_code}`, { redirect: 'manual', headers: { 'User-Agent': PHONE } });          // same visitor again
   await fetch(`${base}/${link.short_code}?src=qr`, { redirect: 'manual', headers: { 'User-Agent': BROWSER, 'x-vercel-ip-country': 'IN' } });
-  clicks.flush();
-  const rows = clickRows(link.id);
+  await clicks.flush();
+  const rows = await clickRows(link.id);
   assert.equal(rows.length, 3);
   const mobile = rows.find((r) => r.device === 'mobile');
   assert.equal(mobile.browser, 'Safari');
@@ -269,11 +279,11 @@ test('CSV import: preview finds errors and duplicates, import creates only the v
   assert.deepEqual(dry.json.summary, { total: 9, valid: 3, duplicates: 2, errors: 4 });
   const status = (n) => dry.json.rows.find((r) => r.row === n).status;
   assert.deepEqual([2, 3, 4, 5, 6, 7, 8, 9, 10].map(status), ['valid', 'valid', 'error', 'error', 'duplicate', 'duplicate', 'error', 'error', 'valid']);
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM links WHERE short_code = 'csv-one'").get().n, 0, 'preview writes nothing');
+  assert.equal((await db.get("SELECT COUNT(*) n FROM links WHERE short_code = 'csv-one'")).n, 0, 'preview writes nothing');
 
   const real = await api('POST', '/api/links/import', { token: userToken, body: csv, raw: 'text/csv' });
   assert.equal(real.json.imported, 3);
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM links WHERE short_code IN ('csv-one','csv-seven')").get().n, 2);
+  assert.equal((await db.get("SELECT COUNT(*) n FROM links WHERE short_code IN ('csv-one','csv-seven')")).n, 2);
   const camps = await api('GET', '/api/campaigns', { token: userToken });
   assert.ok(camps.json.campaigns.some((c) => c.name === 'Fest' && c.links === 2));
   const tags = await api('GET', '/api/tags', { token: userToken });
@@ -367,7 +377,7 @@ test('blocking a domain can disable links that already point at it', async () =>
   const r = await api('POST', '/api/admin/blocklist', { token: adminToken, body: { domain: 'later-bad.test', disable_existing: true } });
   assert.equal(r.json.disabled_links, 1);
   assert.equal((await visit('later-bad')).status, 410);
-  assert.equal(db.prepare('SELECT status FROM links WHERE id = ?').get(link.id).status, 'disabled');
+  assert.equal((await db.get('SELECT status FROM links WHERE id = ?', [link.id])).status, 'disabled');
 });
 
 test('static app and security basics', async () => {

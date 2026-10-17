@@ -4,8 +4,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const ROOT = path.join(__dirname, '..');
-const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');
-fs.mkdirSync(DATA_DIR, { recursive: true });
+const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');   // only holds the generated JWT secret now
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* read-only disk: set JWT_SECRET instead */ }
 
 function loadSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
@@ -20,7 +20,7 @@ module.exports = {
   ROOT,
   DATA_DIR,
   PORT: Number(process.env.PORT || 3000),
-  DB_PATH: process.env.DB_PATH || path.join(DATA_DIR, 'linkpulse.db'),
+  DATABASE_URL: process.env.DATABASE_URL || '',   // Neon connection string (postgresql://...neon.tech/...?sslmode=require)
   BASE_URL: process.env.BASE_URL || '',           // e.g. https://linkpulse.onrender.com
   JWT_SECRET: loadSecret(),
   TOKEN_TTL_SECONDS: 12 * 60 * 60,

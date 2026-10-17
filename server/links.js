@@ -14,12 +14,17 @@ function effectiveStatus(row, now = Date.now()) {
   return 'active';
 }
 
-function tagsFor(db, linkId) {
-  return db.prepare('SELECT t.name FROM tags t JOIN link_tags lt ON lt.tag_id = t.id WHERE lt.link_id = ? ORDER BY t.name')
-    .all(linkId).map((r) => r.name);
+/** Tags for many links in one query: Map(linkId -> [names]). */
+async function tagsForMany(db, linkIds) {
+  const map = new Map(linkIds.map((id) => [id, []]));
+  if (!linkIds.length) return map;
+  const rows = await db.all(
+    'SELECT lt.link_id, t.name FROM tags t JOIN link_tags lt ON lt.tag_id = t.id WHERE lt.link_id = ANY(?::int[]) ORDER BY t.name', [linkIds]);
+  for (const r of rows) map.get(r.link_id).push(r.name);
+  return map;
 }
 
-function serializeLink(db, row, base) {
+function shape(row, base, tags) {
   return {
     id: row.id,
     short_code: row.short_code,
@@ -37,11 +42,17 @@ function serializeLink(db, row, base) {
     campaign_name: row.campaign_name ?? null,
     owner_id: row.owner_id,
     owner_email: row.owner_email,
-    tags: tagsFor(db, row.id),
+    tags,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
 }
+
+async function serializeLinks(db, rows, base) {
+  const tags = await tagsForMany(db, rows.map((r) => r.id));
+  return rows.map((r) => shape(r, base, tags.get(r.id)));
+}
+async function serializeLink(db, row, base) { return (await serializeLinks(db, [row], base))[0]; }
 
 const LINK_SELECT = `
   SELECT l.*, c.name AS campaign_name, u.email AS owner_email
@@ -49,8 +60,8 @@ const LINK_SELECT = `
   LEFT JOIN campaigns c ON c.id = l.campaign_id
   LEFT JOIN users u ON u.id = l.owner_id`;
 
-function getLinkFor(db, user, id) {
-  const row = db.prepare(`${LINK_SELECT} WHERE l.id = ?`).get(id);
+async function getLinkFor(db, user, id) {
+  const row = await db.get(`${LINK_SELECT} WHERE l.id = ?`, [id]);
   if (!row) throw new HttpError(404, 'Link not found');
   if (user.role !== 'admin' && row.owner_id !== user.id) throw new HttpError(404, 'Link not found');
   return row;
@@ -66,65 +77,66 @@ function normalizeTags(raw) {
   return out.slice(0, 10);
 }
 
-function setTags(db, ownerId, linkId, names) {
-  db.prepare('DELETE FROM link_tags WHERE link_id = ?').run(linkId);
+async function setTags(db, ownerId, linkId, names) {
+  await db.run('DELETE FROM link_tags WHERE link_id = ?', [linkId]);
   for (const name of names) {
-    db.prepare('INSERT OR IGNORE INTO tags (owner_id, name) VALUES (?, ?)').run(ownerId, name);
-    const tag = db.prepare('SELECT id FROM tags WHERE owner_id = ? AND name = ?').get(ownerId, name);
-    db.prepare('INSERT OR IGNORE INTO link_tags (link_id, tag_id) VALUES (?, ?)').run(linkId, tag.id);
+    const tag = await db.get('INSERT INTO tags (owner_id, name) VALUES (?, ?) ON CONFLICT (owner_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id', [ownerId, name]);
+    await db.run('INSERT INTO link_tags (link_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING', [linkId, tag.id]);
   }
 }
 
 /** Resolve a campaign by id (must belong to the owner) or by name (created if missing). */
-function resolveCampaign(db, ownerId, { campaign_id, campaign }) {
+async function resolveCampaign(db, ownerId, { campaign_id, campaign }) {
   if (campaign_id !== undefined && campaign_id !== null && campaign_id !== '') {
-    const c = db.prepare('SELECT id FROM campaigns WHERE id = ? AND owner_id = ?').get(Number(campaign_id), ownerId);
+    const n = Number(campaign_id);
+    const c = Number.isInteger(n) && n > 0 && n < 2 ** 31 ? await db.get('SELECT id FROM campaigns WHERE id = ? AND owner_id = ?', [n, ownerId]) : null;
     if (!c) throw new HttpError(400, 'Campaign not found', { errors: { campaign_id: 'Campaign not found' } });
     return c.id;
   }
   const name = String(campaign || '').trim().slice(0, 80);
   if (!name) return null;
-  db.prepare('INSERT OR IGNORE INTO campaigns (owner_id, name, created_at) VALUES (?, ?, ?)').run(ownerId, name, nowIso());
-  return db.prepare('SELECT id FROM campaigns WHERE owner_id = ? AND name = ?').get(ownerId, name).id;
-}
-
-function insertWithGeneratedCode(db, makeRow) {
-  for (let attempt = 0; attempt < 8; attempt++) {
-    try { return makeRow(randomCode(config.CODE_LENGTH)); } catch (e) {
-      if (!/UNIQUE/i.test(String(e.message))) throw e;
-    }
-  }
-  throw new HttpError(503, 'Could not generate a unique short code. Please try again.');
+  const row = await db.get('INSERT INTO campaigns (owner_id, name, created_at) VALUES (?, ?, ?) ON CONFLICT (owner_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id', [ownerId, name, nowIso()]);
+  return row.id;
 }
 
 /** Validate and create a link. Throws HttpError(422) with field errors on bad input. */
-function createLink(db, user, input, { selfHost } = {}) {
-  const v = validateLink(db, input, { ownerId: user.id, selfHost });
+async function createLink(db, user, input, { selfHost } = {}) {
+  const v = await validateLink(db, input, { ownerId: user.id, selfHost });
   if (!v.ok) throw new HttpError(422, 'Please fix the highlighted fields', { errors: v.errors, warnings: v.warnings });
   const c = v.clean;
   const now = nowIso();
 
-  const id = tx(db, () => {
-    const campaignId = resolveCampaign(db, user.id, input);
-    const insert = (code) => db.prepare(`
+  const id = await tx(db, async (t) => {
+    const campaignId = await resolveCampaign(t, user.id, input);
+    // ON CONFLICT DO NOTHING (rather than catching the error) keeps the transaction usable after a clash.
+    const insert = async (code) => (await t.get(`
       INSERT INTO links (owner_id, campaign_id, short_code, destination_url, title, expires_at, click_limit, password_hash, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (short_code) DO NOTHING RETURNING id`, [
       user.id, campaignId, code, c.destination_url, c.title || '', c.expires_at ?? null, c.click_limit ?? null,
-      c.password ? hashPassword(c.password) : null, now, now).lastInsertRowid;
-    const linkId = c.alias ? insert(c.alias) : insertWithGeneratedCode(db, insert);
-    setTags(db, user.id, Number(linkId), normalizeTags(input.tags));
-    return Number(linkId);
+      c.password ? hashPassword(c.password) : null, now, now]))?.id;
+
+    let linkId;
+    if (c.alias) {
+      linkId = await insert(c.alias);
+      if (!linkId) throw new HttpError(422, 'Please fix the highlighted fields', { errors: { alias: 'This alias is already taken' } });
+    } else {
+      for (let attempt = 0; attempt < 8 && !linkId; attempt++) linkId = await insert(randomCode(config.CODE_LENGTH));
+      if (!linkId) throw new HttpError(503, 'Could not generate a unique short code. Please try again.');
+    }
+    await setTags(t, user.id, linkId, normalizeTags(input.tags));
+    return linkId;
   });
   return { id, warnings: v.warnings };
 }
 
-function updateLink(db, user, id, input, { selfHost } = {}) {
-  const row = getLinkFor(db, user, id);
-  const v = validateLink(db, input, { ownerId: row.owner_id, existingId: row.id, selfHost, isEdit: true });
+async function updateLink(db, user, id, input, { selfHost } = {}) {
+  const row = await getLinkFor(db, user, id);
+  const v = await validateLink(db, input, { ownerId: row.owner_id, existingId: row.id, selfHost, isEdit: true });
   if (!v.ok) throw new HttpError(422, 'Please fix the highlighted fields', { errors: v.errors, warnings: v.warnings });
   const c = v.clean;
 
-  tx(db, () => {
+  await tx(db, async (t) => {
     const sets = [];
     const vals = [];
     const put = (col, val) => { sets.push(`${col} = ?`); vals.push(val); };
@@ -135,7 +147,7 @@ function updateLink(db, user, id, input, { selfHost } = {}) {
     if (input.password === null) put('password_hash', null);          // null removes the password; "" or missing leaves it alone
     if (c.password) put('password_hash', hashPassword(c.password));
     if (input.campaign_id !== undefined || input.campaign !== undefined) {
-      put('campaign_id', resolveCampaign(db, row.owner_id, input));
+      put('campaign_id', await resolveCampaign(t, row.owner_id, input));
     }
     if (input.status !== undefined) {
       if (!['active', 'disabled'].includes(input.status)) throw new HttpError(422, 'Invalid status', { errors: { status: 'Use active or disabled' } });
@@ -144,24 +156,24 @@ function updateLink(db, user, id, input, { selfHost } = {}) {
     }
     if (sets.length) {
       put('updated_at', nowIso());
-      db.prepare(`UPDATE links SET ${sets.join(', ')} WHERE id = ?`).run(...vals, row.id);
+      await t.run(`UPDATE links SET ${sets.join(', ')} WHERE id = ?`, [...vals, row.id]);
     }
-    if (input.tags !== undefined) setTags(db, row.owner_id, row.id, normalizeTags(input.tags));
+    if (input.tags !== undefined) await setTags(t, row.owner_id, row.id, normalizeTags(input.tags));
   });
   cache.invalidate(row.short_code);
   return { id: row.id, warnings: v.warnings };
 }
 
 /** Admin takedown: redirects stop on the very next request and history is kept. */
-function setStatus(db, id, status, reason) {
-  const row = db.prepare('SELECT id, short_code FROM links WHERE id = ?').get(id);
+async function setStatus(db, id, status, reason) {
+  const row = await db.get('SELECT id, short_code FROM links WHERE id = ?', [id]);
   if (!row) throw new HttpError(404, 'Link not found');
-  db.prepare('UPDATE links SET status = ?, disabled_reason = ?, updated_at = ? WHERE id = ?')
-    .run(status, status === 'disabled' ? String(reason || 'Disabled by admin').slice(0, 200) : null, nowIso(), id);
+  await db.run('UPDATE links SET status = ?, disabled_reason = ?, updated_at = ? WHERE id = ?',
+    [status, status === 'disabled' ? String(reason || 'Disabled by admin').slice(0, 200) : null, nowIso(), id]);
   cache.invalidate(row.short_code);
 }
 
 module.exports = {
-  effectiveStatus, serializeLink, getLinkFor, createLink, updateLink, setStatus,
+  effectiveStatus, serializeLink, serializeLinks, getLinkFor, createLink, updateLink, setStatus,
   normalizeTags, resolveCampaign, setTags, LINK_SELECT,
 };
