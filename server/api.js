@@ -9,6 +9,7 @@ const cache = require('./cache');
 const qr = require('./qr');
 const { checkCsv } = require('./csv');
 const ai = require('./ai');
+const bio = require('./bio');
 const { recentDecideMs } = require('./redirect');
 const { HttpError, readJson, readBody, clientIp, baseUrl, nowIso } = require('./util');
 
@@ -174,6 +175,19 @@ route('GET', '/api/links/:id/qr.:fmt', async ({ db, req, params, url }) => {
   }
   if (params.fmt === 'png') return { raw: true, type: 'image/png', body: qr.toPng(target), filename: `${row.short_code}-qr.png` };
   throw new HttpError(404, 'Use .svg or .png');
+});
+
+// ------------------------------------------------------------------ link-in-bio page
+route('GET', '/api/bio', async ({ db, req }) => bio.getBio(db, await auth.requireUser(db, req), req));
+route('PUT', '/api/bio', async ({ db, req }) => {
+  const user = await auth.requireUser(db, req);
+  ratelimit.hit(`bio:${user.id}`, 30, 60_000);
+  await bio.saveBio(db, user, await readJson(req));
+  return bio.getBio(db, user, req);
+});
+route('DELETE', '/api/bio', async ({ db, req }) => {
+  await bio.deleteBio(db, await auth.requireUser(db, req));
+  return { ok: true };
 });
 
 // ------------------------------------------------------------------ campaigns, tags

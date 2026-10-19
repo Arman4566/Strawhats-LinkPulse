@@ -8,6 +8,7 @@ const clicks = require('./clicks');
 const auth = require('./auth');
 const { handleApi } = require('./api');
 const { handleRedirect, handleUnlock, CODE_RE } = require('./redirect');
+const { handleBioPage } = require('./bio');
 const { HttpError, sendJson, nowIso } = require('./util');
 
 const PUBLIC_DIR = path.join(config.ROOT, 'public');
@@ -54,6 +55,9 @@ function createServer(db) {
 
       const unlock = pathname.match(/^\/unlock\/([^/]+)$/);
       if (req.method === 'POST' && unlock) return await handleUnlock(db, req, res, decodeURIComponent(unlock[1]));
+
+      const bioMatch = pathname.match(/^\/@([A-Za-z0-9_-]{1,40})\/?$/);
+      if ((req.method === 'GET' || req.method === 'HEAD') && bioMatch) return await handleBioPage(db, req, res, bioMatch[1]);
 
       const code = pathname.slice(1);
       if ((req.method === 'GET' || req.method === 'HEAD') && CODE_RE.test(code)) return await handleRedirect(db, req, res, code);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, get, post } from '../api.js';
-import { Btn, Confetti, Icon, copyText, fromLocalInput, useAsync, useDebounced, useToast, when } from '../ui.jsx';
+import QrPanel from '../qrpanel.jsx';
+import { Btn, Confetti, Icon, ShareMenu, copyText, fromLocalInput, useAsync, useDebounced, useToast, when } from '../ui.jsx';
 
 const EMPTY = { destination_url: '', alias: '', title: '', expires_at: '', click_limit: '', password: '', campaign_id: '', campaign: '', tags: '' };
 const STEP1 = ['destination_url', 'alias'];
@@ -132,12 +133,6 @@ export default function Wizard() {
   );
 }
 
-export function QrImage({ id, alt = 'QR code' }) {
-  const [src, setSrc] = useState('');
-  useEffect(() => { let url; api('GET', `/api/links/${id}/qr.png`, undefined, { blob: true }).then((b) => { url = URL.createObjectURL(b); setSrc(url); }).catch(() => {}); return () => url && URL.revokeObjectURL(url); }, [id]);
-  return <div className="qrbox">{src ? <img src={src} alt={alt} /> : <div className="skeleton" style={{ width: 200, height: 200 }} />}</div>;
-}
-
 function Done({ link, warnings, again }) {
   const toast = useToast();
   return (
@@ -149,9 +144,9 @@ function Done({ link, warnings, again }) {
             <div className="copy"><input type="text" readOnly value={link.short_url} onFocus={(e) => e.target.select()} /><button className="btn" onClick={() => copyText(link.short_url, toast)}><Icon name="copy" size={16} />Copy</button></div>
             <p className="mute sm" style={{ wordBreak: 'break-all' }}>Goes to {link.destination_url}</p>
             {(warnings || []).map((w) => <div className="warnbox" key={w}>⚠ {w}</div>)}
-            <div className="row"><a className="btn" href={`#/links/${link.id}`}>Open analytics</a><a className="btn ghost" href={link.short_url} target="_blank" rel="noopener noreferrer">Test the link</a><button className="btn ghost" onClick={again}>Create another</button></div>
+            <div className="row"><ShareMenu ghost={false} url={link.short_url} title={link.title || `/${link.short_code}`} /><a className="btn ghost" href={`#/links/${link.id}`}>Open analytics</a><a className="btn ghost" href={link.short_url} target="_blank" rel="noopener noreferrer">Test the link</a><button className="btn ghost" onClick={again}>Create another</button></div>
           </div>
-          <div><QrImage id={link.id} alt={`QR code for ${link.short_url}`} /><p className="hint" style={{ textAlign: 'center' }}>Scans are tracked separately.</p></div>
+          <div><QrPanel link={link} alt={`QR code for ${link.short_url}`} /><p className="hint" style={{ textAlign: 'center' }}>Scans are tracked separately.</p></div>
         </div>
       </div>
     </div>

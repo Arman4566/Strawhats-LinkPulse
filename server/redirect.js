@@ -11,6 +11,9 @@ const decideTimes = [];
 const recentDecideMs = () => decideTimes.slice();
 
 const CODE_RE = /^[A-Za-z0-9_-]{3,32}$/;
+const SOURCES = new Set(['qr', 'bio']);          // ?src= values that are recorded as the click source
+const srcOf = (req) => { const s = new URL(req.url, 'http://x').searchParams.get('src'); return SOURCES.has(s) ? s : 'direct'; };
+const srcMark = (req) => { const s = srcOf(req); return s === 'direct' ? '' : `?src=${s}`; };
 
 function page(res, status, title, message, extraHtml = '') {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -54,7 +57,7 @@ async function handleRedirect(db, req, res, code, { unlocked = false } = {}) {
     return page(res, 410, 'Link expired', 'This link has expired and no longer redirects.');
   }
   if (link.password_hash && !unlocked) {
-    const qrMark = new URL(req.url, 'http://x').searchParams.get('src') === 'qr' ? '?src=qr' : '';   // keep the QR marker through the password form
+    const qrMark = srcMark(req);   // keep the QR / bio marker through the password form
     return page(res, 200, 'Password required', 'This link is protected. Enter the password to continue.',
       `<form method="post" action="/unlock/${encodeURIComponent(link.short_code)}${qrMark}">
          <input type="password" name="password" placeholder="Password" autofocus required>
@@ -106,7 +109,7 @@ async function handleRedirect(db, req, res, code, { unlocked = false } = {}) {
         browser: parsed.browser,
         os: parsed.os,
         country: String(req.headers['cf-ipcountry'] || req.headers['x-vercel-ip-country'] || req.headers['x-country-code'] || 'Unknown').slice(0, 40),
-        source: url.searchParams.get('src') === 'qr' ? 'qr' : 'direct',
+        source: srcOf(req),
         visitor_hash: clicks.visitorHash(clientIp(req), ua),
         is_bot: parsed.isBot,
         count_it: countIt,
@@ -127,7 +130,7 @@ async function handleUnlock(db, req, res, code) {
   const body = new URLSearchParams(await readBody(req, 8 * 1024));
   if (!verifyPassword(body.get('password') || '', link.password_hash)) {
     return page(res, 401, 'Wrong password', '<span class="err">That password is not correct.</span>',
-      `<form method="post" action="/unlock/${encodeURIComponent(link.short_code)}">
+      `<form method="post" action="/unlock/${encodeURIComponent(link.short_code)}${srcMark(req)}">
          <input type="password" name="password" placeholder="Password" autofocus required>
          <button type="submit">Try again</button></form>`);
   }

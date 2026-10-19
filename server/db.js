@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS links (
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
+-- who switched a link off: 'admin' (only an admin can switch it back on) or 'owner'. Added after v1.1, so ALTER.
+ALTER TABLE links ADD COLUMN IF NOT EXISTS disabled_by TEXT;
+UPDATE links SET disabled_by = 'admin'
+  WHERE status = 'disabled' AND disabled_by IS NULL
+    AND (disabled_reason LIKE 'Disabled by admin%' OR disabled_reason LIKE 'Domain % was blocked');
 CREATE INDEX IF NOT EXISTS idx_links_owner ON links(owner_id);
 CREATE INDEX IF NOT EXISTS idx_links_campaign ON links(campaign_id);
 
@@ -82,6 +87,28 @@ CREATE TABLE IF NOT EXISTS blocked_domains (
   added_by INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL
 );
+
+-- link-in-bio pages: one per user, a profile plus an ordered list of that user's short links
+CREATE TABLE IF NOT EXISTS bio_pages (
+  id SERIAL PRIMARY KEY,
+  owner_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+  handle CITEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL DEFAULT '',
+  bio TEXT NOT NULL DEFAULT '',
+  theme TEXT NOT NULL DEFAULT 'ocean',
+  published INTEGER NOT NULL DEFAULT 1,
+  views INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bio_items (
+  id SERIAL PRIMARY KEY,
+  page_id INTEGER NOT NULL REFERENCES bio_pages(id) ON DELETE CASCADE,
+  link_id INTEGER NOT NULL REFERENCES links(id),
+  label TEXT NOT NULL DEFAULT '',
+  position INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_bio_items_page ON bio_items(page_id, position);
 
 CREATE TABLE IF NOT EXISTS reports (
   id SERIAL PRIMARY KEY,

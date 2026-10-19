@@ -30,6 +30,16 @@ const P = {
   folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
   eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
   bolt: 'M13 2L4 14h7l-1 8 9-12h-7z',
+  share: 'M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M16 6l-4-4-4 4M12 2v13',
+  download: 'M12 4v12m0 0l-4-4m4 4l4-4M4 20h16',
+  expand: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
+  close: 'M6 6l12 12M18 6L6 18',
+  lock: 'M6 11V8a6 6 0 0 1 12 0v3M5 11h14v10H5z',
+  profile: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0',
+  up2: 'M6 15l6-6 6 6',
+  down2: 'M6 9l6 6 6-6',
+  trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
+  image: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9h.01',
 };
 export function Icon({ name, size = 18, stroke = 2 }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={P[name] || P.info} /></svg>;
@@ -102,6 +112,46 @@ export async function copyText(text, toast) {
     const t = document.createElement('textarea'); t.value = text; document.body.append(t); t.select(); document.execCommand('copy'); t.remove();
   }
   toast('Copied to clipboard');
+}
+
+// ---------------------------------------------------------------- sharing
+/** Share button with a menu: the phone's own share sheet (when there is one), popular apps, and copy. */
+export function ShareMenu({ url, title = '', text = '', label = 'Share', ghost = true, extra = [], iconOnly = false }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const toast = useToast();
+  useEffect(() => {
+    if (!open) return undefined;
+    const away = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    const esc = (e) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('mousedown', away); addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', away); removeEventListener('keydown', esc); };
+  }, [open]);
+  const enc = encodeURIComponent;
+  const msg = text || title || 'Check this out';
+  const targets = [
+    ['WhatsApp', `https://wa.me/?text=${enc(`${msg} ${url}`)}`],
+    ['Telegram', `https://t.me/share/url?url=${enc(url)}&text=${enc(msg)}`],
+    ['X (Twitter)', `https://twitter.com/intent/tweet?url=${enc(url)}&text=${enc(msg)}`],
+    ['LinkedIn', `https://www.linkedin.com/sharing/share-offsite/?url=${enc(url)}`],
+    ['Facebook', `https://www.facebook.com/sharer/sharer.php?u=${enc(url)}`],
+    ['Email', `mailto:?subject=${enc(title || 'A link for you')}&body=${enc(`${msg}\n${url}`)}`],
+  ];
+  const canNative = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  const nativeShare = async () => { setOpen(false); try { await navigator.share({ title, text: msg, url }); } catch (e) { if (e.name !== 'AbortError') toast('Sharing is not available here', true); } };
+  return (
+    <span className="sharewrap" ref={ref}>
+      <button type="button" className={'btn s' + (ghost ? ' ghost' : '')} onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open} aria-label={iconOnly ? `Share ${title || url}` : undefined}><Icon name="share" size={14} />{!iconOnly && label}</button>
+      {open && (
+        <div className="sharemenu" role="menu">
+          {canNative && <button type="button" role="menuitem" onClick={nativeShare}>More apps…</button>}
+          {extra.map((x) => <button type="button" role="menuitem" key={x.label} onClick={() => { setOpen(false); x.onClick(); }}>{x.label}</button>)}
+          {targets.map(([name, href]) => <a key={name} role="menuitem" href={href} target={href.startsWith('mailto') ? undefined : '_blank'} rel="noopener noreferrer" onClick={() => setOpen(false)}>{name}</a>)}
+          <button type="button" role="menuitem" onClick={() => { setOpen(false); copyText(url, toast); }}>Copy link</button>
+        </div>
+      )}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------- small components

@@ -207,7 +207,7 @@ const GROUPS = ['day', 'link', 'country', 'device', 'browser', 'referrer', 'camp
 async function geminiParse(question, ctx) {
   const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!key) return null;
-  const model = process.env.AI_MODEL || 'gemini-2.5-flash';
+  const model = process.env.AI_MODEL || 'gemini-3.5-flash';
   const prompt = `Turn the question into a JSON filter for a link-click analytics database. Reply with JSON only.
 Fields (all optional, omit what the question does not mention):
 metric: "clicks" | "visitors" | "bots"
@@ -303,7 +303,7 @@ async function runQuestion(db, user, question, tz = 0) {
 async function llmSummary(insights, totals) {
   const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!key || !insights.length) return null;
-  const model = process.env.AI_MODEL || 'gemini-2.5-flash';
+  const model = process.env.AI_MODEL || 'gemini-3.5-flash';
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST', signal: AbortSignal.timeout(8000),

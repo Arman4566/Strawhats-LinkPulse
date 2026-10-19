@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { get } from '../api.js';
-import { Badge, ErrorBox, Icon, Skeleton, copyText, fmt, useAsync, useDebounced, useToast } from '../ui.jsx';
+import { Badge, ErrorBox, Icon, ShareMenu, Skeleton, copyText, fmt, useAsync, useDebounced, useToast } from '../ui.jsx';
 
 export function LinkRow({ l, extra }) {
   const toast = useToast();
@@ -15,10 +15,11 @@ export function LinkRow({ l, extra }) {
         <span className="url sm" title={l.destination_url}>{l.destination_url}</span>
         <div className="row" style={{ gap: 6, marginTop: 4 }}>{l.tags.map((t) => <span className="badge" key={t}>#{t}</span>)}{l.campaign_name && <span className="badge ai">{l.campaign_name}</span>}{extra}</div>
       </div>
-      <div><Badge status={l.effective_status} /></div>
+      <div><Badge status={l.effective_status} />{l.locked_by_admin && <div className="lockedby" title={l.disabled_reason || 'Disabled by an admin'}><Icon name="lock" size={12} />by admin</div>}</div>
       <div><b>{fmt(l.click_count)}</b>{l.click_limit ? <span className="mute sm"> / {l.click_limit}</span> : <span className="mute sm"> clicks</span>}{l.click_limit && <div className="usebar"><i style={{ width: `${used}%` }} /></div>}</div>
       <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
         <button className="btn ghost s" onClick={() => copyText(l.short_url, toast)} aria-label={`Copy /${l.short_code}`}><Icon name="copy" size={14} />Copy</button>
+        <ShareMenu url={l.short_url} title={l.title || `/${l.short_code}`} />
         <a className="btn ghost s" href={`#/links/${l.id}`}>Open</a>
       </div>
     </div>

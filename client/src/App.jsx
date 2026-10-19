@@ -10,6 +10,7 @@ import Detail from './pages/Detail.jsx';
 import Import from './pages/Import.jsx';
 import Campaigns from './pages/Campaigns.jsx';
 import Admin from './pages/Admin.jsx';
+import Bio from './pages/Bio.jsx';
 
 function useHash() {
   const [hash, setHash] = useState(location.hash || '#/');
@@ -28,7 +29,7 @@ function useSessionState() {
 
 const NAV = [
   ['/', 'Dashboard', 'home'], ['/ask', 'Ask AI', 'chat', 'AI'], ['/links', 'My links', 'link'],
-  ['/links/new', 'Create', 'plus'], ['/import', 'Import', 'upload'], ['/campaigns', 'Campaigns', 'flag'],
+  ['/links/new', 'Create', 'plus'], ['/bio', 'Bio page', 'profile'], ['/import', 'Import', 'upload'], ['/campaigns', 'Campaigns', 'flag'],
 ];
 
 function Shell({ session, path, children }) {
@@ -69,6 +70,7 @@ function Routes({ path, params, session }) {
   if (path === '/links') return <Links params={params} />;
   if (path === '/links/new') return <Wizard />;
   if ((m = path.match(/^\/links\/(\d+)$/))) return <Detail id={Number(m[1])} />;
+  if (path === '/bio') return <Bio />;
   if (path === '/import') return <Import />;
   if (path === '/campaigns') return <Campaigns />;
   if (path === '/admin' && session.user.role === 'admin') return <Admin />;

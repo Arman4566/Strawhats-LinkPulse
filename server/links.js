@@ -1,7 +1,7 @@
 'use strict';
 const { tx } = require('./db');
 const { hashPassword } = require('./auth');
-const { validateLink } = require('./validate');
+const { validateLink, isBlockedHost } = require('./validate');
 const { randomCode, HttpError, nowIso } = require('./util');
 const cache = require('./cache');
 const config = require('./config');
@@ -34,6 +34,8 @@ function shape(row, base, tags) {
     status: row.status,
     effective_status: effectiveStatus(row),
     disabled_reason: row.disabled_reason,
+    disabled_by: row.disabled_by ?? null,
+    locked_by_admin: row.status === 'disabled' && row.disabled_by === 'admin',   // only an admin can switch it back on
     expires_at: row.expires_at,
     click_limit: row.click_limit,
     click_count: row.click_count,
@@ -151,8 +153,23 @@ async function updateLink(db, user, id, input, { selfHost } = {}) {
     }
     if (input.status !== undefined) {
       if (!['active', 'disabled'].includes(input.status)) throw new HttpError(422, 'Invalid status', { errors: { status: 'Use active or disabled' } });
-      put('status', input.status);
-      put('disabled_reason', input.status === 'disabled' ? String(input.disabled_reason || 'Disabled by owner').slice(0, 200) : null);
+      const isAdmin = user.role === 'admin';
+      const adminLocked = row.status === 'disabled' && row.disabled_by === 'admin';
+      if (input.status === 'active') {
+        // A link an admin disabled or blocked stays off until an admin switches it back on.
+        if (adminLocked && !isAdmin) throw new HttpError(403, 'This link was disabled by an admin. Only an admin can turn it back on.');
+        if (!isAdmin) {
+          let host = '';
+          try { host = new URL(c.destination_url ?? row.destination_url).hostname.toLowerCase(); } catch { host = ''; }
+          const blocked = host && await isBlockedHost(t, host);
+          if (blocked) throw new HttpError(422, `The domain ${blocked} is on the blocklist`, { errors: { status: `The domain ${blocked} is on the blocklist` } });
+        }
+        put('status', 'active'); put('disabled_reason', null); put('disabled_by', null);
+      } else if (!(adminLocked && !isAdmin)) {      // an owner "disabling" an admin-disabled link changes nothing
+        put('status', 'disabled');
+        put('disabled_reason', String(input.disabled_reason || (isAdmin ? 'Disabled by admin' : 'Disabled by owner')).slice(0, 200));
+        put('disabled_by', isAdmin ? 'admin' : 'owner');
+      }
     }
     if (sets.length) {
       put('updated_at', nowIso());
@@ -168,8 +185,9 @@ async function updateLink(db, user, id, input, { selfHost } = {}) {
 async function setStatus(db, id, status, reason) {
   const row = await db.get('SELECT id, short_code FROM links WHERE id = ?', [id]);
   if (!row) throw new HttpError(404, 'Link not found');
-  await db.run('UPDATE links SET status = ?, disabled_reason = ?, updated_at = ? WHERE id = ?',
-    [status, status === 'disabled' ? String(reason || 'Disabled by admin').slice(0, 200) : null, nowIso(), id]);
+  // Only admins call this (takedown / enable / blocklist), so a disable here locks the link against the owner.
+  await db.run('UPDATE links SET status = ?, disabled_reason = ?, disabled_by = ?, updated_at = ? WHERE id = ?',
+    [status, status === 'disabled' ? String(reason || 'Disabled by admin').slice(0, 200) : null, status === 'disabled' ? 'admin' : null, nowIso(), id]);
   cache.invalidate(row.short_code);
 }
 

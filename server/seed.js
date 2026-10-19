@@ -47,9 +47,9 @@ async function seed(db) {
 
     const mk = async (code, dest, title, campaign, opts = {}) => {
       const at = iso(now - (opts.ageDays ?? 28) * 86400_000);
-      const id = (await t.get(`INSERT INTO links (owner_id, campaign_id, short_code, destination_url, title, status, disabled_reason, expires_at, click_limit, password_hash, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [
-        demo, campaign, code, dest, title, opts.status || 'active', opts.reason || null, opts.expires || null,
+      const id = (await t.get(`INSERT INTO links (owner_id, campaign_id, short_code, destination_url, title, status, disabled_reason, disabled_by, expires_at, click_limit, password_hash, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, [
+        demo, campaign, code, dest, title, opts.status || 'active', opts.reason || null, opts.status === 'disabled' ? 'owner' : null, opts.expires || null,
         opts.limit || null, opts.password ? auth.hashPassword(opts.password) : null, at, at])).id;
       for (const tag of opts.tags || []) {
         const tid = (await t.get('INSERT INTO tags (owner_id, name) VALUES (?, ?) ON CONFLICT (owner_id, name) DO UPDATE SET name = EXCLUDED.name RETURNING id', [demo, tag])).id;

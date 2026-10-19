@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { api, get, patch, TZ } from '../api.js';
+import { get, getSession, patch, TZ } from '../api.js';
 import { AreaChart, Donut } from '../charts.jsx';
-import { Badge, Bars, Btn, ErrorBox, Icon, PageSkeleton, RangeTabs, Stat, ago, copyText, fmt, fromLocalInput, toLocalInput, useAsync, useToast, when } from '../ui.jsx';
+import { Badge, Bars, Btn, ErrorBox, Icon, PageSkeleton, RangeTabs, ShareMenu, Stat, ago, copyText, fmt, fromLocalInput, toLocalInput, useAsync, useToast, when } from '../ui.jsx';
 import { InsightsCard } from './Dashboard.jsx';
-import { QrImage } from './Wizard.jsx';
+import QrPanel from '../qrpanel.jsx';
 
 function EditForm({ l, done }) {
   const toast = useToast();
@@ -45,22 +45,23 @@ export default function Detail({ id }) {
   if (!d) return <PageSkeleton />;
   const l = d.link;
   const toggle = async () => { setBusy(true); try { await patch(`/api/links/${id}`, { status: l.status === 'active' ? 'disabled' : 'active' }); toast(l.status === 'active' ? 'Link switched off' : 'Link switched on'); reload(); } catch (e) { toast(e.message, true); } finally { setBusy(false); } };
-  const download = async (fmtName) => {
-    const b = await api('GET', `/api/links/${id}/qr.${fmtName}`, undefined, { blob: true });
-    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `${l.short_code}-qr.${fmtName}` });
-    document.body.append(a); a.click(); a.remove();
-  };
+  const locked = l.locked_by_admin && getSession()?.user.role !== 'admin';   // only an admin can undo an admin's takedown
   return (
     <div className="page" style={{ opacity: loading ? 0.6 : 1, transition: 'opacity .2s' }}>
       <div className="head">
         <div><a href="#/links" className="sm">← My links</a><h1 className="mono" style={{ marginTop: 6 }}>/{l.short_code}</h1><p className="mute row" style={{ gap: 8 }}>{l.title}<Badge status={l.effective_status} />{l.has_password && '🔒'}</p></div>
         <div className="row">
           <button className="btn ghost" onClick={() => copyText(l.short_url, toast)}><Icon name="copy" size={16} />Copy link</button>
+          <ShareMenu ghost url={l.short_url} title={l.title || `/${l.short_code}`} />
           <a className="btn ghost" href={l.short_url} target="_blank" rel="noopener noreferrer">Open</a>
-          <Btn className={'btn ' + (l.status === 'active' ? 'danger' : '')} busy={busy} onClick={toggle}>{l.status === 'active' ? 'Switch off' : 'Switch on'}</Btn>
+          {locked
+            ? <button className="btn ghost" disabled title="An admin disabled this link. Only an admin can switch it back on."><Icon name="lock" size={16} />Locked by admin</button>
+            : <Btn className={'btn ' + (l.status === 'active' ? 'danger' : '')} busy={busy} onClick={toggle}>{l.status === 'active' ? 'Switch off' : 'Switch on'}</Btn>}
         </div>
       </div>
-      {l.status === 'disabled' && l.disabled_reason && <div className="badbox">Disabled: {l.disabled_reason}</div>}
+      {l.status === 'disabled' && (l.locked_by_admin
+        ? <div className="badbox"><b>Disabled by an admin{l.disabled_reason ? `: ${l.disabled_reason}` : ''}.</b> {locked ? 'Only an admin can switch this link back on.' : 'You are an admin, so you can switch it on again.'}</div>
+        : l.disabled_reason && <div className="badbox">Disabled: {l.disabled_reason}</div>)}
       <div className="card reveal" style={{ marginBottom: 18 }}>
         <div className="mute sm">Destination</div><div style={{ wordBreak: 'break-all', fontWeight: 600 }}>{l.destination_url}</div>
         <div className="row mute sm" style={{ marginTop: 10, gap: 16 }}><span>Created {when(l.created_at)}</span><span>Expires {l.expires_at ? when(l.expires_at) : 'never'}</span><span>Clicks {fmt(l.click_count)}{l.click_limit ? ` of ${l.click_limit}` : ''}</span>{l.campaign_name && <span>Campaign {l.campaign_name}</span>}{l.tags.map((t) => <span className="badge" key={t}>#{t}</span>)}</div>
@@ -74,8 +75,7 @@ export default function Detail({ id }) {
       </div>
       <div className="grid gmain mt">
         <div className="card reveal" style={{ '--i': 2 }}><h2>Clicks over time</h2><AreaChart series={d.series} /></div>
-        <div className="card reveal" style={{ '--i': 3 }}><h2>QR code</h2><QrImage id={id} />
-          <div className="row" style={{ justifyContent: 'center', marginTop: 12 }}><button className="btn ghost s" onClick={() => download('png')}>PNG</button><button className="btn ghost s" onClick={() => download('svg')}>SVG</button></div>
+        <div className="card reveal" style={{ '--i': 3 }}><h2>QR code</h2><QrPanel link={l} />
           <p className="hint" style={{ textAlign: 'center' }}>Scans of this code are counted as QR.</p></div>
       </div>
       <div className="grid g2 mt"><InsightsCard link={id} days={days} />

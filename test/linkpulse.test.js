@@ -387,3 +387,77 @@ test('static app and security basics', async () => {
   const traversal = await fetch(`${base}/..%2Fserver%2Fconfig.js`);
   assert.notEqual(traversal.status, 200);
 });
+
+// ---------------------------------------------------------------- admin lock
+test('a link an admin disabled can only be switched back on by an admin', async () => {
+  const link = await makeLink(userToken, { destination_url: 'https://example.com/locked' });
+  await api('POST', `/api/admin/links/${link.id}/disable`, { token: adminToken, body: { reason: 'Reported' } });
+  const detail = await api('GET', `/api/links/${link.id}`, { token: userToken });
+  assert.equal(detail.json.link.locked_by_admin, true);
+  const tryOn = await api('PATCH', `/api/links/${link.id}`, { token: userToken, body: { status: 'active' } });
+  assert.equal(tryOn.status, 403);
+  assert.match(tryOn.json.error, /admin/i);
+  assert.equal((await visit(link.short_code)).status, 410);                         // still off
+  // the owner "disabling" it again must not erase the admin's reason or unlock it
+  await api('PATCH', `/api/links/${link.id}`, { token: userToken, body: { status: 'disabled', disabled_reason: 'mine' } });
+  assert.equal((await db.get('SELECT disabled_reason, disabled_by FROM links WHERE id = ?', [link.id])).disabled_by, 'admin');
+  // editing other rules is still allowed, and does not unlock
+  const edit = await api('PATCH', `/api/links/${link.id}`, { token: userToken, body: { title: 'renamed' } });
+  assert.equal(edit.status, 200);
+  assert.equal(edit.json.link.status, 'disabled');
+  // an admin can switch it on again, through either route
+  const on = await api('PATCH', `/api/links/${link.id}`, { token: adminToken, body: { status: 'active' } });
+  assert.equal(on.status, 200);
+  assert.equal((await visit(link.short_code)).status, 302);
+});
+
+test('owner-disabled links can be re-enabled by the owner, and a blocked domain locks links against the owner', async () => {
+  const mine = await makeLink(userToken, { destination_url: 'https://example.com/mine-off' });
+  assert.equal((await api('PATCH', `/api/links/${mine.id}`, { token: userToken, body: { status: 'disabled' } })).status, 200);
+  assert.equal((await api('PATCH', `/api/links/${mine.id}`, { token: userToken, body: { status: 'active' } })).status, 200);
+  const bad = await makeLink(userToken, { destination_url: 'https://lockme.example/page' });
+  const blocked = await api('POST', '/api/admin/blocklist', { token: adminToken, body: { domain: 'lockme.example', disable_existing: true } });
+  assert.equal(blocked.json.disabled_links >= 1, true);
+  const again = await api('PATCH', `/api/links/${bad.id}`, { token: userToken, body: { status: 'active' } });
+  assert.equal(again.status, 403);
+});
+
+// ---------------------------------------------------------------- link-in-bio pages
+test('link-in-bio: create a page, it lists only live links, taps count as source "bio"', async () => {
+  const a = await makeLink(otherToken, { destination_url: 'https://example.com/bio-a', title: 'Portfolio' });
+  const b = await makeLink(otherToken, { destination_url: 'https://example.com/bio-b', title: 'Shop' });
+  const mine = await makeLink(userToken, { destination_url: 'https://example.com/not-bobs' });
+  const bad = await api('PUT', '/api/bio', { token: otherToken, body: { handle: 'ab', display_name: '' } });
+  assert.equal(bad.status, 422);
+  assert.ok(bad.json.errors.handle && bad.json.errors.display_name);
+  const foreign = await api('PUT', '/api/bio', { token: otherToken, body: { handle: 'bob-links', display_name: 'Bob', items: [{ link_id: mine.id }] } });
+  assert.equal(foreign.status, 422);                                               // cannot add someone else's link
+  const saved = await api('PUT', '/api/bio', { token: otherToken, body: { handle: 'Bob-Links', display_name: 'Bob <b>Builder</b>', bio: 'Hello there', theme: 'sunset', items: [{ link_id: a.id, label: 'My work' }, { link_id: b.id }] } });
+  assert.equal(saved.status, 200, saved.text);
+  assert.equal(saved.json.page.handle, 'bob-links');
+  assert.equal(saved.json.items.length, 2);
+  const taken = await api('PUT', '/api/bio', { token: userToken, body: { handle: 'bob-links', display_name: 'Alice' } });
+  assert.equal(taken.status, 422);                                                 // handle already used
+
+  const html = await (await fetch(`${base}/@Bob-Links`)).text();
+  assert.match(html, /My work/);
+  assert.match(html, /Shop/);
+  assert.match(html, new RegExp(`/${a.short_code}\\?src=bio`));
+  assert.ok(!html.includes('<b>Builder</b>'), 'display name must be escaped');
+  assert.ok(!html.includes('not-bobs'));
+
+  await api('POST', `/api/admin/links/${b.id}/disable`, { token: adminToken, body: {} });
+  const html2 = await (await fetch(`${base}/@bob-links`)).text();
+  assert.ok(!html2.includes('Shop'), 'a disabled link disappears from the page');
+
+  assert.equal((await visit(`${a.short_code}?src=bio`)).status, 302);
+  await clicks.flush();
+  const rows = await clickRows(a.id);
+  assert.equal(rows[0].source, 'bio');
+
+  assert.equal((await fetch(`${base}/@nobody-here`)).status, 404);
+  await api('PUT', '/api/bio', { token: otherToken, body: { handle: 'bob-links', display_name: 'Bob', published: false, items: [] } });
+  assert.equal((await fetch(`${base}/@bob-links`)).status, 404);                   // unpublished
+  assert.equal((await api('DELETE', '/api/bio', { token: otherToken })).status, 200);
+  assert.equal((await api('GET', '/api/bio', { token: otherToken })).json.page, null);
+});
