@@ -12,7 +12,10 @@ Team Strawhats · GEHU Tech Geeks hackathon · Round 2
 - Email:demo@linkpulse.test
 - Pass:demo1234
 
-#Note:We have coded the project together offline and only the team leader has push the code on Github
+## Note:-
+We have coded the whole project together offline and only the team leader has push the code on Github
+
+
 
 ![Login page](docs/screenshots/01-login.png)
 
@@ -140,8 +143,8 @@ Repository rules we follow (GEHU Tech Geeks):
 
 ## Team Strawhats
 
-*1.Arman Ahamad-Backend
-2.Harshit Nainwal -Backend
-3.Anshul Prashad-Frontend
-4.Pankaj Pandey-Frontend
-5.Mohit Singh Bora-UI/UX & Tester*
+- Arman Ahamad-Backend(Leader)
+- Harshit Nainwal -Backend
+- Anshul Prashad-Frontend
+- Pankaj Pandey-Frontend
+- Mohit Singh Bora-UI/UX & Tester*
