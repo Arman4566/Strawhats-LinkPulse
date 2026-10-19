@@ -4,6 +4,13 @@
 Team Strawhats · GEHU Tech Geeks hackathon · Round 2
 
 **Live link:** https://linkpluse-hackathon.onrender.com
+**Accounts details**
+Admin:- 
+Email:admin@linkpulse.test
+Pass:@dmin123
+Demo account:-
+Email:demo@linkpulse.test
+Pass:demo1234
 
 #Note:We have coded the project together offline and only the team leader has push the code on Github
 
